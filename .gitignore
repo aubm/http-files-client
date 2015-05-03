@@ -1,0 +1,4 @@
+*.swp
+errors.log
+files/*
+!files/.gitkeep
