@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -27,20 +28,18 @@ func main() {
 		return
 	}
 
+	ch := make(chan string)
 	for _, file := range files {
-		err := downloadFile(file)
-		if err == nil {
-			err = deleteRemoteFile(file)
-			log.Print(err)
-		} else {
-			log.Print(err)
-		}
+		go downloadFile(file, ch)
+	}
+	for range files {
+		fmt.Println(<-ch)
 	}
 }
 
 func initGlobals() {
 	if len(os.Args) < 4 {
-		log.Fatal("Not enough arguments")
+		log.Fatal("Not enough arguments, correct usage is go run main.go /destination/dir 0.0.0.0:8888 mySecretToken")
 	}
 	destDir = os.Args[1]
 	hostPort = os.Args[2]
@@ -77,7 +76,7 @@ func getFilesList() ([]string, error) {
 	return jsonResponse, nil
 }
 
-func downloadFile(filePathName string) error {
+func downloadFile(filePathName string, ch chan<- string) {
 	// create intermediate directories if needed
 	dirname := filepath.Dir(filePathName)
 	if dirname != "." {
@@ -88,49 +87,57 @@ func downloadFile(filePathName string) error {
 	out, err := os.Create(destDir + "/" + filePathName)
 	defer out.Close()
 	if err != nil {
-		return err
+		ch <- fmt.Sprint(err)
+		return
 	}
 
 	// Perform a GET HTTP request to fetch the file
 	requestQuery := "token=" + url.QueryEscape(token) + "&filename=" + url.QueryEscape(filePathName)
-	requestUri := "http://" + hostPort + "/downloadFile?" + requestQuery
-	resp, err := http.Get(requestUri)
+	requestURI := "http://" + hostPort + "/downloadFile?" + requestQuery
+	resp, err := http.Get(requestURI)
 	defer resp.Body.Close()
 
 	if err != nil {
-		return err
+		ch <- fmt.Sprint(err)
+		return
 	}
 
 	if resp.StatusCode != 200 {
-		return errors.New("Get " + requestUri + ": " + resp.Status)
+		ch <- fmt.Sprint("Get " + requestURI + ": " + resp.Status)
+		return
 	}
 
 	// Copy the response body into the newly created file
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return err
+		ch <- fmt.Sprint(err)
+		return
 	}
 
-	return nil
+	deleteRemoteFile(filePathName, ch)
 }
 
-func deleteRemoteFile(filePathName string) error {
+func deleteRemoteFile(filePathName string, ch chan<- string) {
 	// Build the DELETE HTTP request that delete the remote file from server
 	requestQuery := "token=" + url.QueryEscape(token) + "&filename=" + url.QueryEscape(filePathName)
-	requestUri := "http://" + hostPort + "/deleteFile?" + requestQuery
-	req, err := http.NewRequest("DELETE", requestUri, nil)
+	requestURI := "http://" + hostPort + "/deleteFile?" + requestQuery
+	req, err := http.NewRequest("DELETE", requestURI, nil)
 	if err != nil {
-		return err
+		ch <- fmt.Sprint(err)
+		return
 	}
 
 	// Perform the request and handle response or error
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return err
-	}
-	if resp.StatusCode != http.StatusNoContent {
-		return errors.New("Delete " + requestUri + ": " + resp.Status)
+		ch <- fmt.Sprint(err)
+		return
 	}
 
-	return nil
+	if resp.StatusCode != http.StatusNoContent {
+		ch <- fmt.Sprint("Delete " + requestURI + ": " + resp.Status)
+		return
+	}
+
+	ch <- fmt.Sprintf("%v successfully downloaded from remote server.", filePathName)
 }
