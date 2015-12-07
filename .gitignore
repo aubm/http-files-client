@@ -1,4 +1,4 @@
 *.swp
-errors.log
+logs.txt
 files/*
 !files/.gitkeep

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"git.aubm.net/kendo5731/http_files_client/loggers"
 	"io"
 	"io/ioutil"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 var destDir string
@@ -20,12 +22,11 @@ var token string
 
 func main() {
 	initGlobals()
-	defer initLogFile().Close()
+	defer loggers.InitLoggers().Close()
 
 	files, err := getFilesList()
 	if err != nil {
-		log.Fatal(err)
-		return
+		loggers.Error.Fatalln(err)
 	}
 
 	ch := make(chan string)
@@ -46,19 +47,10 @@ func initGlobals() {
 	token = os.Args[3]
 }
 
-func initLogFile() *os.File {
-	logResource, err := os.OpenFile("./errors.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.SetOutput(logResource)
-	return logResource
-}
-
 func getFilesList() ([]string, error) {
 	resp, err := http.Get("http://" + hostPort + "/listFiles?token=" + token)
 	if err != nil {
-		log.Fatal(err)
+		loggers.Error.Fatalln(err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -68,7 +60,7 @@ func getFilesList() ([]string, error) {
 	respContent, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		log.Fatal(err)
+		loggers.Error.Fatalln(err)
 	}
 	var jsonResponse []string
 	json.Unmarshal(respContent, &jsonResponse)
@@ -88,8 +80,11 @@ func downloadFile(filePathName string, ch chan<- string) {
 	defer out.Close()
 	if err != nil {
 		ch <- fmt.Sprint(err)
+		ch <- fmt.Sprint("Done: %v", filePathName)
 		return
 	}
+
+	startTime := time.Now()
 
 	// Perform a GET HTTP request to fetch the file
 	requestQuery := "token=" + url.QueryEscape(token) + "&filename=" + url.QueryEscape(filePathName)
@@ -98,21 +93,26 @@ func downloadFile(filePathName string, ch chan<- string) {
 	defer resp.Body.Close()
 
 	if err != nil {
-		ch <- fmt.Sprint(err)
+		loggers.Error.Printf("(%v) %v\n", filePathName, err)
+		done(filePathName, ch)
 		return
 	}
 
 	if resp.StatusCode != 200 {
-		ch <- fmt.Sprint("Get " + requestURI + ": " + resp.Status)
+		loggers.Error.Printf("(%v) Response status : %v\n", filePathName, resp.Status)
+		done(filePathName, ch)
 		return
 	}
 
 	// Copy the response body into the newly created file
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		ch <- fmt.Sprint(err)
+		loggers.Error.Printf("(%v) %v\n", filePathName, err)
+		done(filePathName, ch)
 		return
 	}
+
+	loggers.Info.Printf("download success [%v]: %v\n", time.Now().Sub(startTime), filePathName)
 
 	deleteRemoteFile(filePathName, ch)
 }
@@ -123,21 +123,29 @@ func deleteRemoteFile(filePathName string, ch chan<- string) {
 	requestURI := "http://" + hostPort + "/deleteFile?" + requestQuery
 	req, err := http.NewRequest("DELETE", requestURI, nil)
 	if err != nil {
-		ch <- fmt.Sprint(err)
+		loggers.Error.Printf("(%v) %v\n", filePathName, err)
+		done(filePathName, ch)
 		return
 	}
 
 	// Perform the request and handle response or error
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		loggers.Error.Printf("(%v) %v\n", filePathName, err)
 		ch <- fmt.Sprint(err)
+		done(filePathName, ch)
 		return
 	}
 
 	if resp.StatusCode != http.StatusNoContent {
-		ch <- fmt.Sprint("Delete " + requestURI + ": " + resp.Status)
+		loggers.Error.Printf("(%v) while deleting, response status: %v\n", filePathName, resp.Status)
+		done(filePathName, ch)
 		return
 	}
 
-	ch <- fmt.Sprintf("%v successfully downloaded from remote server.", filePathName)
+	done(filePathName, ch)
+}
+
+func done(filePathName string, ch chan<- string) {
+	ch <- fmt.Sprintf("Done: %v", filePathName)
 }
