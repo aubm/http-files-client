@@ -2,3 +2,4 @@
 logs.txt
 files/*
 !files/.gitkeep
+http_files_client
